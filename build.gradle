@@ -15,6 +15,10 @@
 
 import org.ajoberstar.grgit.Grgit
 
+task getHomeDir << {
+    println gradle.gradleHomeDir
+}
+
 buildscript {
   repositories {
     mavenCentral()
