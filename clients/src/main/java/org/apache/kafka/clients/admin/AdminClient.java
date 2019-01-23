@@ -17,6 +17,8 @@
 
 package org.apache.kafka.clients.admin;
 
+import org.apache.kafka.common.Metric;
+import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.TopicPartitionReplica;
 import org.apache.kafka.common.acl.AclBinding;
@@ -24,6 +26,7 @@ import org.apache.kafka.common.acl.AclBindingFilter;
 import org.apache.kafka.common.annotation.InterfaceStability;
 import org.apache.kafka.common.config.ConfigResource;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Properties;
@@ -49,7 +52,7 @@ public abstract class AdminClient implements AutoCloseable {
      * @return The new KafkaAdminClient.
      */
     public static AdminClient create(Properties props) {
-        return KafkaAdminClient.createInternal(new AdminClientConfig(props), null);
+        return KafkaAdminClient.createInternal(new AdminClientConfig(props, true), null);
     }
 
     /**
@@ -59,7 +62,7 @@ public abstract class AdminClient implements AutoCloseable {
      * @return The new KafkaAdminClient.
      */
     public static AdminClient create(Map<String, Object> conf) {
-        return KafkaAdminClient.createInternal(new AdminClientConfig(conf), null);
+        return KafkaAdminClient.createInternal(new AdminClientConfig(conf, true), null);
     }
 
     /**
@@ -82,8 +85,24 @@ public abstract class AdminClient implements AutoCloseable {
      *
      * @param duration  The duration to use for the wait time.
      * @param unit      The time unit to use for the wait time.
+     * @deprecated Since 2.2. Use {@link #close(Duration)} or {@link #close()}.
      */
-    public abstract void close(long duration, TimeUnit unit);
+    @Deprecated
+    public void close(long duration, TimeUnit unit) {
+        close(Duration.ofMillis(unit.toMillis(duration)));
+    }
+
+    /**
+     * Close the AdminClient and release all associated resources.
+     *
+     * The close operation has a grace period during which current operations will be allowed to
+     * complete, specified by the given duration.
+     * New operations will not be accepted during the grace period.  Once the grace period is over,
+     * all operations that have not yet been completed will be aborted with a TimeoutException.
+     *
+     * @param timeout  The time to use for the wait time.
+     */
+    public abstract void close(Duration timeout);
 
     /**
      * Create a batch of new topics with the default options.
@@ -370,14 +389,17 @@ public abstract class AdminClient implements AutoCloseable {
     public abstract AlterConfigsResult alterConfigs(Map<ConfigResource, Config> configs, AlterConfigsOptions options);
 
     /**
-     * Change the log directory for the specified replicas. This API is currently only useful if it is used
-     * before the replica has been created on the broker. It will support moving replicas that have already been created after
-     * KIP-113 is fully implemented.
+     * Change the log directory for the specified replicas. If the replica does not exist on the broker, the result
+     * shows REPLICA_NOT_AVAILABLE for the given replica and the replica will be created in the given log directory on the
+     * broker when it is created later. If the replica already exists on the broker, the replica will be moved to the given
+     * log directory if it is not already there.
+     *
+     * This operation is not transactional so it may succeed for some replicas while fail for others.
      *
      * This is a convenience method for #{@link AdminClient#alterReplicaLogDirs(Map, AlterReplicaLogDirsOptions)} with default options.
      * See the overload for more details.
      *
-     * This operation is supported by brokers with version 1.0.0 or higher.
+     * This operation is supported by brokers with version 1.1.0 or higher.
      *
      * @param replicaAssignment  The replicas with their log directory absolute path
      * @return                   The AlterReplicaLogDirsResult
@@ -387,13 +409,14 @@ public abstract class AdminClient implements AutoCloseable {
     }
 
     /**
-     * Change the log directory for the specified replicas. This API is currently only useful if it is used
-     * before the replica has been created on the broker. It will support moving replicas that have already been created after
-     * KIP-113 is fully implemented.
+     * Change the log directory for the specified replicas. If the replica does not exist on the broker, the result
+     * shows REPLICA_NOT_AVAILABLE for the given replica and the replica will be created in the given log directory on the
+     * broker when it is created later. If the replica already exists on the broker, the replica will be moved to the given
+     * log directory if it is not already there.
      *
      * This operation is not transactional so it may succeed for some replicas while fail for others.
      *
-     * This operation is supported by brokers with version 1.0.0 or higher.
+     * This operation is supported by brokers with version 1.1.0 or higher.
      *
      * @param replicaAssignment  The replicas with their log directory absolute path
      * @param options            The options to use when changing replica dir
@@ -768,4 +791,9 @@ public abstract class AdminClient implements AutoCloseable {
     public DeleteConsumerGroupsResult deleteConsumerGroups(Collection<String> groupIds) {
         return deleteConsumerGroups(groupIds, new DeleteConsumerGroupsOptions());
     }
+
+    /**
+     * Get the metrics kept by the adminClient
+     */
+    public abstract Map<MetricName, ? extends Metric> metrics();
 }

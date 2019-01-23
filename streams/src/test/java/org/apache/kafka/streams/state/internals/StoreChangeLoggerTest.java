@@ -17,6 +17,8 @@
 package org.apache.kafka.streams.state.internals;
 
 
+import org.apache.kafka.common.header.Headers;
+import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.utils.LogContext;
@@ -38,24 +40,34 @@ public class StoreChangeLoggerTest {
     private final String topic = "topic";
 
     private final Map<Integer, String> logged = new HashMap<>();
+    private final Map<Integer, Headers> loggedHeaders = new HashMap<>();
 
-    private final InternalMockProcessorContext context = new InternalMockProcessorContext(StateSerdes.withBuiltinTypes(topic, Integer.class, String.class),
-        new RecordCollectorImpl(null, "StoreChangeLoggerTest", new LogContext("StoreChangeLoggerTest "), new DefaultProductionExceptionHandler(), new Metrics().sensor("skipped-records")) {
+    private final InternalMockProcessorContext context = new InternalMockProcessorContext(
+        StateSerdes.withBuiltinTypes(topic, Integer.class, String.class),
+        new RecordCollectorImpl(
+            "StoreChangeLoggerTest",
+            new LogContext("StoreChangeLoggerTest "),
+            new DefaultProductionExceptionHandler(),
+            new Metrics().sensor("skipped-records")) {
+
             @Override
             public <K1, V1> void send(final String topic,
                                       final K1 key,
                                       final V1 value,
+                                      final Headers headers,
                                       final Integer partition,
                                       final Long timestamp,
                                       final Serializer<K1> keySerializer,
                                       final Serializer<V1> valueSerializer) {
                 logged.put((Integer) key, (String) value);
+                loggedHeaders.put((Integer) key, headers);
             }
 
             @Override
             public <K1, V1> void send(final String topic,
                                       final K1 key,
                                       final V1 value,
+                                      final Headers headers,
                                       final Long timestamp,
                                       final Serializer<K1> keySerializer,
                                       final Serializer<V1> valueSerializer,
@@ -65,7 +77,8 @@ public class StoreChangeLoggerTest {
         }
     );
 
-    private final StoreChangeLogger<Integer, String> changeLogger = new StoreChangeLogger<>(topic, context, StateSerdes.withBuiltinTypes(topic, Integer.class, String.class));
+    private final StoreChangeLogger<Integer, String> changeLogger =
+        new StoreChangeLogger<>(topic, context, StateSerdes.withBuiltinTypes(topic, Integer.class, String.class));
 
     @Test
     public void testAddRemove() {
@@ -80,6 +93,13 @@ public class StoreChangeLoggerTest {
 
         changeLogger.logChange(0, null);
         assertNull(logged.get(0));
+    }
 
+    @Test
+    public void shouldNotSendRecordHeadersToChangelogTopic() {
+        context.headers().add(new RecordHeader("key", "value".getBytes()));
+        changeLogger.logChange(0, "zero");
+
+        assertNull(loggedHeaders.get(0));
     }
 }

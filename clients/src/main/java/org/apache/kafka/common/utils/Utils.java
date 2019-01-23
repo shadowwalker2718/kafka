@@ -24,7 +24,6 @@ import java.io.Closeable;
 import java.io.DataOutput;
 import java.io.EOFException;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
@@ -41,6 +40,7 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
+import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.text.DecimalFormat;
@@ -57,8 +57,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public final class Utils {
 
@@ -67,6 +70,8 @@ public final class Utils {
     // This matches URIs of formats: host:port and protocol:\\host:port
     // IPv6 is supported with [ip] pattern
     private static final Pattern HOST_PORT_PATTERN = Pattern.compile(".*?\\[?([0-9a-zA-Z\\-%._:]*)\\]?:([0-9]+)");
+
+    private static final Pattern VALID_HOST_CHARACTERS = Pattern.compile("([0-9a-zA-Z\\-%._:]*)");
 
     // Prints up to 2 decimal digits. Used for human readable printing
     private static final DecimalFormat TWO_DIGIT_FORMAT = new DecimalFormat("0.##");
@@ -112,6 +117,17 @@ public final class Utils {
     }
 
     /**
+     * Read a UTF8 string from the current position till the end of a byte buffer. The position of the byte buffer is
+     * not affected by this method.
+     *
+     * @param buffer The buffer to read from
+     * @return The UTF8 string
+     */
+    public static String utf8(ByteBuffer buffer) {
+        return utf8(buffer, buffer.remaining());
+    }
+
+    /**
      * Read a UTF8 string from a byte buffer at a given offset. Note that the position of the byte buffer
      * is not affected by this method.
      *
@@ -151,7 +167,7 @@ public final class Utils {
      * @param rest The remaining values to compare
      * @return The minimum of all passed values
      */
-    public static long min(long first, long ... rest) {
+    public static long min(long first, long... rest) {
         long min = first;
         for (long r : rest) {
             if (r < min)
@@ -166,7 +182,7 @@ public final class Utils {
      * @param rest The remaining values to compare
      * @return The maximum of all passed values
      */
-    public static long max(long first, long ... rest) {
+    public static long max(long first, long... rest) {
         long max = first;
         for (long r : rest) {
             if (r > max)
@@ -364,6 +380,7 @@ public final class Utils {
      * @param data byte array to hash
      * @return 32 bit hash of the given array
      */
+    @SuppressWarnings("fallthrough")
     public static int murmur2(final byte[] data) {
         int length = data.length;
         int seed = 0x9747b28c;
@@ -422,6 +439,15 @@ public final class Utils {
     public static Integer getPort(String address) {
         Matcher matcher = HOST_PORT_PATTERN.matcher(address);
         return matcher.matches() ? Integer.parseInt(matcher.group(2)) : null;
+    }
+
+    /**
+     * Basic validation of the supplied address. checks for valid characters
+     * @param address hostname string to validate
+     * @return true if address contains valid characters
+     */
+    public static boolean validHostPattern(String address) {
+        return VALID_HOST_CHARACTERS.matcher(address).matches();
     }
 
     /**
@@ -487,6 +513,12 @@ public final class Utils {
         return sb.toString();
     }
 
+    /**
+     *  Converts a {@code Map} class into a string, concatenating keys and values
+     *  Example:
+     *      {@code mkString({ key: "hello", keyTwo: "hi" }, "|START|", "|END|", "=", ",")
+     *          => "|START|key=hello,keyTwo=hi|END|"}
+     */
     public static <K, V> String mkString(Map<K, V> map, String begin, String end,
                                          String keyValueSeparator, String elementSeparator) {
         StringBuilder bld = new StringBuilder();
@@ -502,6 +534,26 @@ public final class Utils {
     }
 
     /**
+     *  Converts an extensions string into a {@code Map<String, String>}.
+     *
+     *  Example:
+     *      {@code parseMap("key=hey,keyTwo=hi,keyThree=hello", "=", ",") => { key: "hey", keyTwo: "hi", keyThree: "hello" }}
+     *
+     */
+    public static Map<String, String> parseMap(String mapStr, String keyValueSeparator, String elementSeparator) {
+        Map<String, String> map = new HashMap<>();
+
+        if (!mapStr.isEmpty()) {
+            String[] attrvals = mapStr.split(elementSeparator);
+            for (String attrval : attrvals) {
+                String[] array = attrval.split(keyValueSeparator, 2);
+                map.put(array[0], array[1]);
+            }
+        }
+        return map;
+    }
+
+    /**
      * Read a properties file from the given path
      * @param filename The path of the file to read
      */
@@ -509,7 +561,7 @@ public final class Utils {
         Properties props = new Properties();
 
         if (filename != null) {
-            try (InputStream propStream = new FileInputStream(filename)) {
+            try (InputStream propStream = Files.newInputStream(Paths.get(filename))) {
                 props.load(propStream);
             }
         } else {
@@ -579,8 +631,7 @@ public final class Utils {
     public static String readFileAsString(String path, Charset charset) throws IOException {
         if (charset == null) charset = Charset.defaultCharset();
 
-        try (FileInputStream stream = new FileInputStream(new File(path))) {
-            FileChannel fc = stream.getChannel();
+        try (FileChannel fc = FileChannel.open(Paths.get(path))) {
             MappedByteBuffer bb = fc.map(FileChannel.MapMode.READ_ONLY, 0, fc.size());
             return charset.decode(bb).toString();
         }
@@ -615,18 +666,10 @@ public final class Utils {
      */
     @SafeVarargs
     public static <T> Set<T> mkSet(T... elems) {
-        return new HashSet<>(Arrays.asList(elems));
-    }
-
-    /*
-     * Creates a list
-     * @param elems the elements
-     * @param <T> the type of element
-     * @return List
-     */
-    @SafeVarargs
-    public static <T> List<T> mkList(T... elems) {
-        return Arrays.asList(elems);
+        Set<T> result = new HashSet<>((int) (elems.length / 0.75) + 1);
+        for (T elem : elems)
+            result.add(elem);
+        return result;
     }
 
     /**
@@ -725,7 +768,7 @@ public final class Utils {
      * @return
      */
     public static <T> List<T> safe(List<T> other) {
-        return other == null ? Collections.<T>emptyList() : other;
+        return other == null ? Collections.emptyList() : other;
     }
 
    /**
@@ -951,6 +994,15 @@ public final class Utils {
         while (iterator.hasNext())
             res.add(iterator.next());
         return res;
+    }
+
+    public static <T> List<T> concatListsUnmodifiable(List<T> left, List<T> right) {
+        return concatLists(left, right, Collections::unmodifiableList);
+    }
+
+    public static <T> List<T> concatLists(List<T> left, List<T> right, Function<List<T>, List<T>> finisher) {
+        return Stream.concat(left.stream(), right.stream())
+                .collect(Collectors.collectingAndThen(Collectors.toList(), finisher));
     }
 
 }

@@ -121,7 +121,7 @@ class NamedCache {
         // evicted already been removed from the cache so add it to the list of
         // flushed entries and remove from dirtyKeys.
         if (evicted != null) {
-            entries.add(new ThreadCache.DirtyEntry(evicted.key, evicted.entry.value, evicted.entry));
+            entries.add(new ThreadCache.DirtyEntry(evicted.key, evicted.entry.value(), evicted.entry));
             dirtyKeys.remove(evicted.key);
         }
 
@@ -130,9 +130,9 @@ class NamedCache {
             if (node == null) {
                 throw new IllegalStateException("Key = " + key + " found in dirty key set, but entry is null");
             }
-            entries.add(new ThreadCache.DirtyEntry(key, node.entry.value, node.entry));
+            entries.add(new ThreadCache.DirtyEntry(key, node.entry.value(), node.entry));
             node.entry.markClean();
-            if (node.entry.value == null) {
+            if (node.entry.value() == null) {
                 deleted.add(node.key);
             }
         }
@@ -257,7 +257,6 @@ class NamedCache {
         }
 
         remove(node);
-        cache.remove(key);
         dirtyKeys.remove(key);
         currentSizeBytes -= node.size();
         return node.entry();
@@ -368,10 +367,10 @@ class NamedCache {
 
             // add parent
             final Map<String, String> allMetricTags = metrics.tagMap(
-                "record-cache-id", "all",
-                "task-id", taskName
+                 "task-id", taskName,
+                "record-cache-id", "all"
             );
-            final Sensor taskLevelHitRatioSensor = metrics.taskLevelSensor("hitRatio", taskName, Sensor.RecordingLevel.DEBUG);
+            final Sensor taskLevelHitRatioSensor = metrics.taskLevelSensor(taskName, "hitRatio", Sensor.RecordingLevel.DEBUG);
             taskLevelHitRatioSensor.add(
                 new MetricName("hitRatio-avg", group, "The average cache hit ratio.", allMetricTags),
                 new Avg()
@@ -387,8 +386,8 @@ class NamedCache {
 
             // add child
             final Map<String, String> metricTags = metrics.tagMap(
-                "record-cache-id", ThreadCache.underlyingStoreNamefromCacheName(cacheName),
-                "task-id", taskName
+                 "task-id", taskName,
+                "record-cache-id", ThreadCache.underlyingStoreNamefromCacheName(cacheName)
             );
 
             hitRatioSensor = metrics.cacheLevelSensor(

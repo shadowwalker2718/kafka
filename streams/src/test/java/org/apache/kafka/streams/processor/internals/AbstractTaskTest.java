@@ -42,6 +42,7 @@ import org.junit.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -62,8 +63,8 @@ public class AbstractTaskTest {
     private final TopicPartition storeTopicPartition2 = new TopicPartition("t2", 0);
     private final TopicPartition storeTopicPartition3 = new TopicPartition("t3", 0);
     private final TopicPartition storeTopicPartition4 = new TopicPartition("t4", 0);
-    private final Collection<TopicPartition> storeTopicPartitions
-        = Utils.mkSet(storeTopicPartition1, storeTopicPartition2, storeTopicPartition3, storeTopicPartition4);
+    private final Collection<TopicPartition> storeTopicPartitions =
+        Utils.mkSet(storeTopicPartition1, storeTopicPartition2, storeTopicPartition3, storeTopicPartition4);
 
     @Before
     public void before() {
@@ -151,7 +152,7 @@ public class AbstractTaskTest {
         expect(store4.name()).andReturn(storeName4).anyTimes();
         EasyMock.replay(store4);
 
-        final StateDirectory stateDirectory = new StateDirectory(streamsConfig, new MockTime());
+        final StateDirectory stateDirectory = new StateDirectory(streamsConfig, new MockTime(), true);
         final AbstractTask task = createTask(
             consumer,
             new HashMap<StateStore, String>() {
@@ -233,7 +234,7 @@ public class AbstractTaskTest {
                                 storeTopicPartitions,
                                 ProcessorTopology.withLocalStores(new ArrayList<>(stateStoresToChangelogTopics.keySet()), storeNamesToChangelogTopics),
                                 consumer,
-                                new StoreChangelogReader(consumer, new MockStateRestoreListener(), new LogContext("stream-task-test ")),
+                                new StoreChangelogReader(consumer, Duration.ZERO, new MockStateRestoreListener(), new LogContext("stream-task-test ")),
                                 false,
                                 stateDirectory,
                                 config) {

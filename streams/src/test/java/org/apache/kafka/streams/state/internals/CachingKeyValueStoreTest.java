@@ -23,7 +23,6 @@ import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.errors.InvalidStateStoreException;
-import org.apache.kafka.streams.kstream.internals.CacheFlushListener;
 import org.apache.kafka.streams.kstream.internals.Change;
 import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.internals.MockStreamsMetrics;
@@ -34,6 +33,7 @@ import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.streams.state.Stores;
 import org.apache.kafka.test.InternalMockProcessorContext;
+import org.easymock.EasyMock;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -75,7 +75,8 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
         cache = new ThreadCache(new LogContext("testCache "), maxCacheSizeBytes, new MockStreamsMetrics(new Metrics()));
         context = new InternalMockProcessorContext(null, null, null, (RecordCollector) null, cache);
         topic = "topic";
-        context.setRecordContext(new ProcessorRecordContext(10, 0, 0, topic));
+        context.setRecordContext(
+            new ProcessorRecordContext(10, 0, 0, topic, null));
         store.init(context, null);
     }
 
@@ -103,6 +104,22 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
     }
 
     @Test
+    public void shouldCloseAfterErrorWithFlush() {
+        try {
+            cache = EasyMock.niceMock(ThreadCache.class);
+            context = new InternalMockProcessorContext(null, null, null, (RecordCollector) null, cache);
+            context.setRecordContext(new ProcessorRecordContext(10, 0, 0, topic, null));
+            store.init(context, null);
+            cache.flush("0_0-store");
+            EasyMock.expectLastCall().andThrow(new NullPointerException("Simulating an error on flush"));
+            EasyMock.replay(cache);
+            store.close();
+        } catch (final NullPointerException npe) {
+            assertFalse(underlyingStore.isOpen());
+        }
+    }
+
+    @Test
     public void shouldPutGetToFromCache() {
         store.put(bytesKey("key"), bytesValue("value"));
         store.put(bytesKey("key2"), bytesValue("value2"));
@@ -123,7 +140,7 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
 
     @Test
     public void shouldFlushEvictedItemsIntoUnderlyingStore() throws IOException {
-        int added = addItemsToCache();
+        final int added = addItemsToCache();
         // all dirty entries should have been flushed
         assertEquals(added, underlyingStore.approximateNumEntries());
         assertEquals(added, store.approximateNumEntries());
@@ -132,7 +149,7 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
 
     @Test
     public void shouldForwardDirtyItemToListenerWhenEvicted() throws IOException {
-        int numRecords = addItemsToCache();
+        final int numRecords = addItemsToCache();
         assertEquals(numRecords, cacheFlushListener.forwarded.size());
     }
 
@@ -167,7 +184,7 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
 
     @Test
     public void shouldIterateAllStoredItems() throws IOException {
-        int items = addItemsToCache();
+        final int items = addItemsToCache();
         final KeyValueIterator<Bytes, byte[]> all = store.all();
         final List<Bytes> results = new ArrayList<>();
         while (all.hasNext()) {
@@ -178,7 +195,7 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
 
     @Test
     public void shouldIterateOverRange() throws IOException {
-        int items = addItemsToCache();
+        final int items = addItemsToCache();
         final KeyValueIterator<Bytes, byte[]> range = store.range(bytesKey(String.valueOf(0)), bytesKey(String.valueOf(items)));
         final List<Bytes> results = new ArrayList<>();
         while (range.hasNext()) {
@@ -268,12 +285,13 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
 
     @Test
     public void shouldThrowNullPointerExceptionOnPutAllWithNullKey() {
-        List<KeyValue<Bytes, byte[]>> entries = new ArrayList<>();
+        final List<KeyValue<Bytes, byte[]>> entries = new ArrayList<>();
         entries.add(new KeyValue<Bytes, byte[]>(null, bytesValue("a")));
         try {
             store.putAll(entries);
             fail("Should have thrown NullPointerException while putAll null key");
-        } catch (NullPointerException e) { }
+        } catch (final NullPointerException e) {
+        }
     }
 
     @Test
@@ -287,7 +305,7 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
 
     @Test
     public void shouldPutAll() {
-        List<KeyValue<Bytes, byte[]>> entries = new ArrayList<>();
+        final List<KeyValue<Bytes, byte[]>> entries = new ArrayList<>();
         entries.add(new KeyValue<>(bytesKey("a"), bytesValue("1")));
         entries.add(new KeyValue<>(bytesKey("b"), bytesValue("2")));
         store.putAll(entries);
@@ -321,7 +339,10 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
         final Map<K, Change<V>> forwarded = new HashMap<>();
 
         @Override
-        public void apply(final K key, final V newValue, final V oldValue) {
+        public void apply(final K key,
+                          final V newValue,
+                          final V oldValue,
+                          final long timestamp) {
             forwarded.put(key, new Change<>(newValue, oldValue));
         }
     }

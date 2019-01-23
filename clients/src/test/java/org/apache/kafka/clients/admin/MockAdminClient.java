@@ -17,6 +17,8 @@
 package org.apache.kafka.clients.admin;
 
 import org.apache.kafka.common.KafkaFuture;
+import org.apache.kafka.common.Metric;
+import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.TopicPartitionInfo;
@@ -29,13 +31,13 @@ import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.internals.KafkaFutureImpl;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 public class MockAdminClient extends AdminClient {
     public static final String DEFAULT_CLUSTER_ID = "I4ZmrWqfT2e-upky_4fdPA";
@@ -46,6 +48,8 @@ public class MockAdminClient extends AdminClient {
 
     private Node controller;
     private int timeoutNextRequests = 0;
+
+    private Map<MetricName, Metric> mockMetrics = new HashMap<>();
 
     /**
      * Creates MockAdminClient for a cluster with the given brokers. The Kafka cluster ID uses the default value from
@@ -102,6 +106,14 @@ public class MockAdminClient extends AdminClient {
         }
 
         allTopics.put(name, new TopicMetadata(internal, partitions, configs));
+    }
+
+    public void markTopicForDeletion(final String name) {
+        if (!allTopics.containsKey(name)) {
+            throw new IllegalArgumentException(String.format("Topic %s did not exist.", name));
+        }
+
+        allTopics.get(name).markedForDeletion = true;
     }
 
     public void timeoutNextRequest(int numberOfRequest) {
@@ -163,7 +175,7 @@ public class MockAdminClient extends AdminClient {
             int numberOfPartitions = newTopic.numPartitions();
             List<TopicPartitionInfo> partitions = new ArrayList<>(numberOfPartitions);
             for (int p = 0; p < numberOfPartitions; ++p) {
-                partitions.add(new TopicPartitionInfo(p, brokers.get(0), replicas, Collections.<Node>emptyList()));
+                partitions.add(new TopicPartitionInfo(p, brokers.get(0), replicas, Collections.emptyList()));
             }
             allTopics.put(topicName, new TopicMetadata(false, partitions, newTopic.configs()));
             future.complete(null);
@@ -213,7 +225,7 @@ public class MockAdminClient extends AdminClient {
         for (String requestedTopic : topicNames) {
             for (Map.Entry<String, TopicMetadata> topicDescription : allTopics.entrySet()) {
                 String topicName = topicDescription.getKey();
-                if (topicName.equals(requestedTopic)) {
+                if (topicName.equals(requestedTopic) && !topicDescription.getValue().markedForDeletion) {
                     TopicMetadata topicMetadata = topicDescription.getValue();
                     KafkaFutureImpl<TopicDescription> future = new KafkaFutureImpl<>();
                     future.complete(new TopicDescription(topicName, topicMetadata.isInternalTopic, topicMetadata.partitions));
@@ -223,8 +235,7 @@ public class MockAdminClient extends AdminClient {
             }
             if (!topicDescriptions.containsKey(requestedTopic)) {
                 KafkaFutureImpl<TopicDescription> future = new KafkaFutureImpl<>();
-                future.completeExceptionally(new UnknownTopicOrPartitionException(
-                    String.format("Topic %s unknown.", requestedTopic)));
+                future.completeExceptionally(new UnknownTopicOrPartitionException("Topic " + requestedTopic + " not found."));
                 topicDescriptions.put(requestedTopic, future);
             }
         }
@@ -374,7 +385,7 @@ public class MockAdminClient extends AdminClient {
     }
 
     @Override
-    public void close(long duration, TimeUnit unit) {}
+    public void close(Duration timeout) {}
 
 
     private final static class TopicMetadata {
@@ -382,13 +393,24 @@ public class MockAdminClient extends AdminClient {
         final List<TopicPartitionInfo> partitions;
         final Map<String, String> configs;
 
+        public boolean markedForDeletion;
+
         TopicMetadata(boolean isInternalTopic,
                       List<TopicPartitionInfo> partitions,
                       Map<String, String> configs) {
             this.isInternalTopic = isInternalTopic;
             this.partitions = partitions;
-            this.configs = configs != null ? configs : Collections.<String, String>emptyMap();
+            this.configs = configs != null ? configs : Collections.emptyMap();
+            this.markedForDeletion = false;
         }
     }
 
+    public void setMockMetrics(MetricName name, Metric metric) {
+        mockMetrics.put(name, metric);
+    }
+
+    @Override
+    public Map<MetricName, ? extends Metric> metrics() {
+        return mockMetrics;
+    }
 }

@@ -23,6 +23,7 @@ import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import net.sourceforge.argparse4j.inf.Namespace;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Scheduler;
+import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.trogdor.common.Node;
 import org.apache.kafka.trogdor.common.Platform;
 import org.apache.kafka.trogdor.rest.AgentStatusResponse;
@@ -30,6 +31,7 @@ import org.apache.kafka.trogdor.rest.CreateWorkerRequest;
 import org.apache.kafka.trogdor.rest.DestroyWorkerRequest;
 import org.apache.kafka.trogdor.rest.JsonRestServer;
 import org.apache.kafka.trogdor.rest.StopWorkerRequest;
+import org.apache.kafka.trogdor.rest.UptimeResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,17 +62,20 @@ public final class Agent {
      */
     private final JsonRestServer restServer;
 
+    private final Time time;
+
     /**
      * Create a new Agent.
      *
      * @param platform      The platform object to use.
      * @param scheduler     The scheduler to use for this Agent.
      * @param restServer    The REST server to use.
-     * @param resource      The AgentRestResoure to use.
+     * @param resource      The AgentRestResource to use.
      */
     public Agent(Platform platform, Scheduler scheduler,
                  JsonRestServer restServer, AgentRestResource resource) {
-        this.serverStartMs = scheduler.time().milliseconds();
+        this.time = scheduler.time();
+        this.serverStartMs = time.milliseconds();
         this.workerManager = new WorkerManager(platform, scheduler);
         this.restServer = restServer;
         resource.setAgent(this);
@@ -92,6 +97,10 @@ public final class Agent {
 
     public AgentStatusResponse status() throws Exception {
         return new AgentStatusResponse(serverStartMs, workerManager.workerStates());
+    }
+
+    public UptimeResponse uptime() {
+        return new UptimeResponse(serverStartMs, time.milliseconds());
     }
 
     public void createWorker(CreateWorkerRequest req) throws Throwable {
@@ -147,18 +156,15 @@ public final class Agent {
         log.info("Starting agent process.");
         final Agent agent = new Agent(platform, Scheduler.SYSTEM, restServer, resource);
         restServer.start(resource);
-        Runtime.getRuntime().addShutdownHook(new Thread() {
-            @Override
-            public void run() {
-                log.warn("Running agent shutdown hook.");
-                try {
-                    agent.beginShutdown();
-                    agent.waitForShutdown();
-                } catch (Exception e) {
-                    log.error("Got exception while running agent shutdown hook.", e);
-                }
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            log.warn("Running agent shutdown hook.");
+            try {
+                agent.beginShutdown();
+                agent.waitForShutdown();
+            } catch (Exception e) {
+                log.error("Got exception while running agent shutdown hook.", e);
             }
-        });
+        }));
         agent.waitForShutdown();
     }
 };

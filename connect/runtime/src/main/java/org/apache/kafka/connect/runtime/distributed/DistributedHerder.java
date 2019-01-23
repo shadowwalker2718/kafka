@@ -38,6 +38,7 @@ import org.apache.kafka.connect.runtime.ConnectMetrics.MetricGroup;
 import org.apache.kafka.connect.runtime.ConnectMetricsRegistry;
 import org.apache.kafka.connect.runtime.ConnectorConfig;
 import org.apache.kafka.connect.runtime.HerderConnectorContext;
+import org.apache.kafka.connect.runtime.HerderRequest;
 import org.apache.kafka.connect.runtime.SinkConnectorConfig;
 import org.apache.kafka.connect.runtime.SourceConnectorConfig;
 import org.apache.kafka.connect.runtime.TargetState;
@@ -139,7 +140,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
 
     // To handle most external requests, like creating or destroying a connector, we can use a generic request where
     // the caller specifies all the code that should be executed.
-    final NavigableSet<HerderRequest> requests = new ConcurrentSkipListSet<>();
+    final NavigableSet<DistributedHerderRequest> requests = new ConcurrentSkipListSet<>();
     // Config updates can be collected and applied together when possible. Also, we need to take care to rebalance when
     // needed (e.g. task reconfiguration, which requires everyone to coordinate offset commits).
     private Set<String> connectorConfigUpdates = new HashSet<>();
@@ -255,7 +256,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         final long now = time.milliseconds();
         long nextRequestTimeoutMs = Long.MAX_VALUE;
         while (true) {
-            final HerderRequest next = peekWithoutException();
+            final DistributedHerderRequest next = peekWithoutException();
             if (next == null) {
                 break;
             } else if (now >= next.at) {
@@ -382,7 +383,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
 
             // Explicitly fail any outstanding requests so they actually get a response and get an
             // understandable reason for their failure.
-            HerderRequest request = requests.pollFirst();
+            DistributedHerderRequest request = requests.pollFirst();
             while (request != null) {
                 request.callback().onCompletion(new ConnectException("Worker is shutting down"), null);
                 request = requests.pollFirst();
@@ -450,7 +451,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                         if (!configState.contains(connName)) {
                             callback.onCompletion(new NotFoundException("Connector " + connName + " not found"), null);
                         } else {
-                            Map<String, String> config = configState.connectorConfig(connName);
+                            Map<String, String> config = configState.rawConnectorConfig(connName);
                             callback.onCompletion(null, new ConnectorInfo(connName, config,
                                 configState.tasks(connName),
                                 connectorTypeForClass(config.get(ConnectorConfig.CONNECTOR_CLASS_CONFIG))));
@@ -554,9 +555,9 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
 
                         // Note that we use the updated connector config despite the fact that we don't have an updated
                         // snapshot yet. The existing task info should still be accurate.
-                        Map<String, String> map = configState.connectorConfig(connName);
                         ConnectorInfo info = new ConnectorInfo(connName, config, configState.tasks(connName),
-                            map == null ? null : connectorTypeForClass(map.get(ConnectorConfig.CONNECTOR_CLASS_CONFIG)));
+                                // validateConnectorConfig have checked the existence of CONNECTOR_CLASS_CONFIG
+                                connectorTypeForClass(config.get(ConnectorConfig.CONNECTOR_CLASS_CONFIG)));
                         callback.onCompletion(null, new Created<>(!exists, info));
                         return null;
                     }
@@ -606,7 +607,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                             List<TaskInfo> result = new ArrayList<>();
                             for (int i = 0; i < configState.taskCount(connName); i++) {
                                 ConnectorTaskId id = new ConnectorTaskId(connName, i);
-                                result.add(new TaskInfo(id, configState.taskConfig(id)));
+                                result.add(new TaskInfo(id, configState.rawTaskConfig(id)));
                             }
                             callback.onCompletion(null, result);
                         }
@@ -642,7 +643,12 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
 
     @Override
     public void restartConnector(final String connName, final Callback<Void> callback) {
-        addRequest(new Callable<Void>() {
+        restartConnector(0, connName, callback);
+    }
+
+    @Override
+    public HerderRequest restartConnector(final long delayMs, final String connName, final Callback<Void> callback) {
+        return addRequest(delayMs, new Callable<Void>() {
             @Override
             public Void call() throws Exception {
                 if (checkRebalanceNeeded(callback))
@@ -858,6 +864,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         log.info("Starting task {}", taskId);
         return worker.startTask(
                 taskId,
+                configState,
                 configState.connectorConfig(taskId.connector()),
                 configState.taskConfig(taskId),
                 this,
@@ -945,7 +952,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             public void onCompletion(Throwable error, Void result) {
                 // If we encountered an error, we don't have much choice but to just retry. If we don't, we could get
                 // stuck with a connector that thinks it has generated tasks, but wasn't actually successful and therefore
-                // never makes progress. The retry has to run through a HerderRequest since this callback could be happening
+                // never makes progress. The retry has to run through a DistributedHerderRequest since this callback could be happening
                 // from the HTTP request forwarding thread.
                 if (error != null) {
                     log.error("Failed to reconfigure connector's tasks, retrying after backoff:", error);
@@ -1005,8 +1012,9 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                 }
             }
             if (changed) {
+                List<Map<String, String>> rawTaskProps = reverseTransform(connName, configState, taskProps);
                 if (isLeader()) {
-                    configBackingStore.putTaskConfigs(connName, taskProps);
+                    configBackingStore.putTaskConfigs(connName, rawTaskProps);
                     cb.onCompletion(null, null);
                 } else {
                     // We cannot forward the request on the same thread because this reconfiguration can happen as a result of connector
@@ -1015,8 +1023,15 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                         @Override
                         public void run() {
                             try {
-                                String reconfigUrl = RestServer.urlJoin(leaderUrl(), "/connectors/" + connName + "/tasks");
-                                RestClient.httpRequest(reconfigUrl, "POST", taskProps, null, config);
+                                String leaderUrl = leaderUrl();
+                                if (leaderUrl == null || leaderUrl.trim().isEmpty()) {
+                                    cb.onCompletion(new ConnectException("Request to leader to " +
+                                            "reconfigure connector tasks failed " +
+                                            "because the URL of the leader's REST interface is empty!"), null);
+                                    return;
+                                }
+                                String reconfigUrl = RestServer.urlJoin(leaderUrl, "/connectors/" + connName + "/tasks");
+                                RestClient.httpRequest(reconfigUrl, "POST", rawTaskProps, null, config);
                                 cb.onCompletion(null, null);
                             } catch (ConnectException e) {
                                 log.error("Request to leader to reconfigure connector tasks failed", e);
@@ -1041,19 +1056,19 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         return false;
     }
 
-    HerderRequest addRequest(Callable<Void> action, Callback<Void> callback) {
+    DistributedHerderRequest addRequest(Callable<Void> action, Callback<Void> callback) {
         return addRequest(0, action, callback);
     }
 
-    HerderRequest addRequest(long delayMs, Callable<Void> action, Callback<Void> callback) {
-        HerderRequest req = new HerderRequest(time.milliseconds() + delayMs, requestSeqNum.incrementAndGet(), action, callback);
+    DistributedHerderRequest addRequest(long delayMs, Callable<Void> action, Callback<Void> callback) {
+        DistributedHerderRequest req = new DistributedHerderRequest(time.milliseconds() + delayMs, requestSeqNum.incrementAndGet(), action, callback);
         requests.add(req);
         if (peekWithoutException() == req)
             member.wakeup();
         return req;
     }
 
-    private HerderRequest peekWithoutException() {
+    private DistributedHerderRequest peekWithoutException() {
         try {
             return requests.isEmpty() ? null : requests.first();
         } catch (NoSuchElementException e) {
@@ -1117,13 +1132,13 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         }
     }
 
-    static class HerderRequest implements Comparable<HerderRequest> {
+    class DistributedHerderRequest implements HerderRequest, Comparable<DistributedHerderRequest> {
         private final long at;
         private final long seq;
         private final Callable<Void> action;
         private final Callback<Void> callback;
 
-        public HerderRequest(long at, long seq, Callable<Void> action, Callback<Void> callback) {
+        public DistributedHerderRequest(long at, long seq, Callable<Void> action, Callback<Void> callback) {
             this.at = at;
             this.seq = seq;
             this.action = action;
@@ -1139,7 +1154,12 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         }
 
         @Override
-        public int compareTo(HerderRequest o) {
+        public void cancel() {
+            DistributedHerder.this.requests.remove(this);
+        }
+
+        @Override
+        public int compareTo(DistributedHerderRequest o) {
             final int cmp = Long.compare(at, o.at);
             return cmp == 0 ? Long.compare(seq, o.seq) : cmp;
         }
@@ -1147,9 +1167,9 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
-            if (!(o instanceof HerderRequest))
+            if (!(o instanceof DistributedHerderRequest))
                 return false;
-            HerderRequest other = (HerderRequest) o;
+            DistributedHerderRequest other = (DistributedHerderRequest) o;
             return compareTo(other) == 0;
         }
 
