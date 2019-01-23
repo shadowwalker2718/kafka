@@ -15,7 +15,7 @@
 
 import org.ajoberstar.grgit.Grgit
 
-task getHomeDir << {
+task getHomeDir {
     println gradle.gradleHomeDir
 }
 
