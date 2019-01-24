@@ -308,6 +308,7 @@ public enum ApiKeys {
     }
 
     private Schema schemaFor(Schema[] versions, short version) {
+        System.out.println("clients/src/main/java/org/apache/kafka/common/protocol/ApiKeys.java  Henry: " + version);
         if (!isVersionSupported(version))
             throw new IllegalArgumentException("Invalid version for API key " + this + ": " + version);
         return versions[version];
